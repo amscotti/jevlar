@@ -1,0 +1,14 @@
+# Keep the build context small and never ship local state into the image.
+.env
+.env.*
+.git/
+.github/
+bin/
+dist/
+coverage.out
+*.test
+*.out
+*.bak
+.venv-sdk/
+tests/sdk/.venv/
+fakeupstream

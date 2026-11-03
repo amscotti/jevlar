@@ -1,0 +1,52 @@
+[Unit]
+Description=Jevlar decision-model gateway
+Documentation=https://github.com/amscotti/jevlar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jevlar
+Group=jevlar
+ExecStart=/usr/local/bin/jevlar --config /etc/jevlar/config.toml
+# Optional environment file for ${VAR} references in the configuration
+# (for example TYPESAFE_API_KEY). The leading '-' means it may be absent.
+EnvironmentFile=-/etc/jevlar/jevlar.env
+# SIGHUP re-reads the configuration in place; the process keeps serving.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Jevlar holds many upstream connections: one per provider concurrency
+# slot plus client sockets. Raise the descriptor limit accordingly.
+LimitNOFILE=65536
+
+Restart=on-failure
+RestartSec=2s
+# Give in-flight requests the configured shutdown_grace_ms plus margin
+# before systemd escalates to SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Hardening. The binary is static and needs nothing from the host except
+# its config and its usage directory.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# The usage directory is the only writable path.
+ReadWritePaths=/var/lib/jevlar
+StateDirectory=jevlar
+ConfigurationDirectory=jevlar
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,135 @@
+[tools]
+go = "1.27.3"
+golangci-lint = "2.15.0"
+
+# Task runner (the plan's single entry point; no Makefile). mise puts the
+# pinned tools above on PATH inside every task, so no `mise exec --`
+# prefixes are needed.
+
+[tasks.fmt]
+description = "rewrite source with gofumpt (via golangci-lint fmt)"
+run = "golangci-lint fmt"
+
+[tasks.fmt-check]
+description = "fail if any file is not formatter-clean"
+run = "golangci-lint fmt --diff"
+
+[tasks.lint]
+description = "golangci-lint with the project configuration"
+run = "golangci-lint run"
+
+[tasks.vet]
+description = "go vet across the module"
+run = "go vet ./..."
+
+[tasks.test]
+description = "unit and integration tests"
+run = "go test ./..."
+
+[tasks.test-race]
+description = "tests under the race detector"
+run = "go test -race ./..."
+
+[tasks.cover]
+description = "coverage profile, per-function report and threshold gate"
+run = """
+set -eu
+go test -coverprofile=coverage.out -covermode=atomic ./...
+go tool cover -func=coverage.out
+scripts/coverage_gate.sh coverage.out
+"""
+
+[tasks.build]
+description = "compile bin/jevlar with the version from git injected"
+run = 'go build -ldflags "-X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o bin/jevlar ./cmd/jevlar'
+
+[tasks.check]
+description = "everything CI gates on: fmt check, lint, vet, race tests, build, coverage"
+depends = ["fmt-check", "lint", "vet", "test-race", "build", "cover"]
+
+[tasks.tidy-check]
+description = "go mod tidy must produce no changes"
+run = """
+set -eu
+cp go.mod go.mod.bak
+cp go.sum go.sum.bak
+# Restore the originals on any exit (success or failure) so the working
+# tree is never left holding the tidy output when the gate fails.
+trap "mv -f go.mod.bak go.mod 2>/dev/null || true; mv -f go.sum.bak go.sum 2>/dev/null || true" EXIT
+go mod tidy
+if ! cmp -s go.mod go.mod.bak || ! cmp -s go.sum go.sum.bak; then
+  echo "tidy-check: go mod tidy changed go.mod/go.sum; run it and commit the result" >&2
+  exit 1
+fi
+"""
+
+[tasks.deps-gate]
+description = "the module resolves and internal packages never import cmd/"
+run = """
+set -eu
+go list ./... > /dev/null
+if go list -deps ./internal/... | grep -q '^github\\.com/amscotti/jevlar/cmd'; then
+  echo "deps-gate: internal packages must not import github.com/amscotti/jevlar/cmd" >&2
+  exit 1
+fi
+echo "deps-gate: ok"
+"""
+
+[tasks.vuln]
+description = "govulncheck at the pinned golang.org/x/vuln version"
+run = "go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./..."
+
+[tasks.fuzz]
+description = "Run the parser and rewrite fuzz targets for a bounded time"
+run = """
+FUZZ_TIME="${FUZZ_TIME:-30s}"
+go test ./internal/proxy/ -run '^$' -fuzz FuzzFindModel -fuzztime "$FUZZ_TIME"
+go test ./internal/proxy/ -run '^$' -fuzz FuzzRewriteModel -fuzztime "$FUZZ_TIME"
+go test ./internal/config/ -run '^$' -fuzz FuzzExpand -fuzztime "$FUZZ_TIME"
+"""
+
+[tasks.soak]
+description = "Sustained two-provider soak (SOAK_SECONDS, default 600)"
+run = "./scripts/soak.sh"
+
+[tasks.bench]
+description = "Proxy overhead and saturation gates"
+run = "./scripts/bench.sh"
+
+[tasks.sdk-compat]
+description = "Official TypeSafe Python SDK against Jevlar (needs TYPESAFE_API_KEY)"
+run = "./scripts/sdk-compat.sh"
+
+[tasks.smoke]
+description = "End-to-end smoke over real sockets"
+run = "./scripts/smoke.sh"
+
+[tasks.unit]
+description = "Check the systemd unit when systemd-analyze is available"
+run = """
+if command -v systemd-analyze >/dev/null 2>&1; then
+  # verify resolves ExecStart, and the CI runner has no installed binary;
+  # rewrite it to a command that exists so the directive grammar and the
+  # hardening options are still checked.
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' EXIT
+  sed "s|^ExecStart=.*|ExecStart=$(command -v true)|" jevlar.service > "$tmpdir/jevlar.service"
+  systemd-analyze verify "$tmpdir/jevlar.service"
+else
+  echo "systemd-analyze not available; skipping unit verification"
+fi
+"""
+
+[tasks.ci]
+description = "the full CI pipeline, exactly as CI runs it"
+run = """
+set -eu
+# Comments in Go sources must never cite plan phases; the gate is an
+# if/exit construct because `! grep` under set -e is inert in a && chain,
+# and its self-test plants a probe to prove the gate can fail.
+# The chain is sequential on purpose: a parallel depends ran tidy-check's
+# tidy-write concurrently with the build/test readers of go.mod and go.sum.
+scripts/phase_grep.sh && scripts/phase_grep_test.sh &&
+mise run tidy-check && mise run deps-gate && mise run check && mise run vuln &&
+FUZZ_TIME=15s mise run fuzz && mise run smoke && mise run unit
+"""

@@ -1,0 +1,33 @@
+# Container configuration: binds all interfaces so a published port
+# reaches the process inside the container's network namespace.
+#
+# Requires two environment variables (for example via --env-file .env):
+#   TYPESAFE_API_KEY        upstream provider key
+#   JEVLAR_CLIENT_KEY_HASH  sha256 hex of the token callers present,
+#                           printed by `jevlar keyhash <token>`
+#
+# The admin plane is disabled here: without a token it must stay on
+# loopback, which is unreachable through a published port.
+config_version = 1
+
+[server]
+listen             = "0.0.0.0:8080"
+request_timeout_ms = 30_000
+
+[auth]
+keys = [{ id = "app", hash = "${JEVLAR_CLIENT_KEY_HASH}", rpm = 600, tpm = 6_000_000 }]
+
+[[providers]]
+name            = "typesafe"
+base_url        = "https://api.typesafe.ai"
+path            = "/v1/systemone"
+auth            = "bearer"
+models          = ["jev-latest", "jev-1.14"]
+timeout_ms      = 8_000
+max_concurrency = 64
+api_keys = [{ id = "primary", value = "${TYPESAFE_API_KEY}" }]
+
+[models."jev-latest"]
+targets = [{ provider = "typesafe", model = "jev-latest" }]
+max_attempts = 2
+description  = "Latest general-purpose Jev decision model (TypeSafe)."

@@ -1,0 +1,18 @@
+# Getting-started configuration: requires zero environment variables and
+# runs as-is against a local Ollama instance. Point an alias at a real
+# provider by adding a bearer-auth [[providers]] block with an api_keys
+# entry and an [auth] key hash from `jevlar keyhash`; every field is shown
+# in configs/example.toml.
+config_version = 1
+
+[server]
+listen = "127.0.0.1:8080"
+admin_listen = "127.0.0.1:8081"
+shutdown_grace_ms = 10_000
+
+[[providers]]
+name = "ollama-local"
+base_url = "http://127.0.0.1:11434"
+path = "/v1/systemone"
+auth = "none"
+models = ["nimble", "tev1"]

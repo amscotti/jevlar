@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to the same branch/PR cancels the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting, linting, vet, race tests, build, coverage, tidy-check,
+  # dependency gate, govulncheck, fuzzing, smoke test, unit-file check.
+  # The task list lives in mise.toml; this file duplicates none of it.
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Full history so the build task's `git describe --tags` can resolve a
+      # version; without tags it falls back to the commit hash or "dev".
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # mise installs the toolchain pinned in mise.toml (Go, golangci-lint)
+      # and the task runner. Pinned by commit SHA (the v2 tag, currently
+      # v2.4.4) so a retagged upstream cannot change what runs.
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4 (v2)
+      - name: mise run ci
+        run: mise run ci
+
+  # The release build is otherwise only exercised on a tag. Validate the
+  # goreleaser configuration and cross-compile Linux and macOS binaries on
+  # every PR so a tag cannot discover a broken release file.
+  release-config:
+    name: release config
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4 (v2)
+      - name: Validate goreleaser configuration
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+      # The release produces an SBOM per archive; goreleaser shells out to
+      # syft, which the action does not bundle.
+      - uses: anchore/sbom-action/download-syft@v0
+      - name: Snapshot release (archives, checksums, SBOMs)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
+
+  # The image is published at release time; build both target architectures
+  # here so a broken Dockerfile fails the PR, not the tag.
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false

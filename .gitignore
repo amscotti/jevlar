@@ -1,0 +1,16 @@
+# Secrets — never commit
+.env
+
+# Go
+/bin/
+/dist/
+*.test
+*.out
+# Stray `go build` output for the test helper.
+/fakeupstream
+# Editor and tidy-check interrupt litter
+*.bak
+
+# Python test virtualenvs
+.venv-sdk/
+tests/sdk/.venv/

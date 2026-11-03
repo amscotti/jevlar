@@ -1,0 +1,13 @@
+# Smallest valid Jevlar configuration: one loopback provider with no auth.
+# Port 9 (discard) is never contacted; requests reach the proxy path but
+# every upstream attempt fails there until a real provider replaces it.
+config_version = 1
+
+[server]
+listen = "127.0.0.1:8080"
+
+[[providers]]
+name = "loopback"
+base_url = "http://127.0.0.1:9"
+path = "/v1/systemone"
+auth = "none"

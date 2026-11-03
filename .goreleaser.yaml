@@ -1,0 +1,62 @@
+# goreleaser configuration for Jevlar releases.
+#
+#   goreleaser release --clean            (tag-driven, in CI)
+#   goreleaser build --snapshot --clean   (local verification)
+version: 2
+
+project_name: jevlar
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: jevlar
+    main: ./cmd/jevlar
+    binary: jevlar
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+      - CHANGELOG.md
+      - configs/example.toml
+      - configs/minimal.toml
+      - configs/getting-started.toml
+      - configs/container.toml
+      - jevlar.service
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - id: archive
+    artifacts: archive
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  prerelease: auto

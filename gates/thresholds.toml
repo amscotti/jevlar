@@ -1,0 +1,34 @@
+# Pre-registered gates and thresholds.
+#
+# coverage:    per-package and total minimums enforced by CI.
+# performance: measured by scripts/bench.sh (oha or ab) on one host, in the
+#              same run as the direct-upstream baseline; hardware-dependent,
+#              so it is a release check, not a CI gate. The saturation gate
+#              exists because a 40 ms-latency test cannot see a CPU
+#              regression.
+# reliability: soak invariants checked by scripts/soak.sh; a ten-minute
+#              release run, not a CI gate.
+
+[coverage]
+app     = 0.80
+config  = 0.90
+metrics = 0.90
+admin   = 0.85
+runtime = 0.85
+proxy   = 0.85
+health  = 0.90
+keyring = 0.90
+usage   = 0.90
+total   = 0.80
+
+[performance]
+proxy_overhead_p50_ms = 2.0    # at 40 ms injected upstream, 16 connections
+proxy_overhead_p99_ms = 10.0
+saturation_min_rps    = 6000   # 0 ms upstream, 64 connections — catches CPU/alloc regressions
+startup_ms            = 100
+idle_rss_mb           = 40
+binary_mb             = 16
+
+[reliability]
+soak_client_error_rate = 0.0   # two targets, 3 attempts, 10% 429 + 5% 500
+fd_growth_per_reload   = 0

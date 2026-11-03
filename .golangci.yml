@@ -1,0 +1,154 @@
+# golangci-lint v2 configuration. The linter set is the project's committed
+# quality bar: everything here runs in CI via `mise run lint`.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Only the explicitly enabled linters run; no default set.
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errcheck
+    - errorlint
+    - forbidigo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - nolintlint
+    - revive
+    - staticcheck
+    - unused
+
+  settings:
+    depguard:
+      # Seed rules for the packages that exist today. The full dependency
+      # matrix from the architecture (every package's allowed imports) is
+      # enforced once the remaining packages have implementations.
+      rules:
+        config-imports-nothing-internal:
+          files:
+            - "**/internal/config/**"
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/config must not import other Jevlar packages"
+        health-imports-nothing-internal:
+          files:
+            - "**/internal/health/**"
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/health must not import other Jevlar packages"
+        keyring-imports-only-health:
+          files:
+            - "**/internal/keyring/**"
+            - "!**/*_test.go"
+          # listMode lax: the allow list only answers for internal imports;
+          # the standard library is always permitted.
+          list-mode: lax
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/keyring may import only internal/health"
+          allow:
+            - "github.com/amscotti/jevlar/internal/health"
+        runtime-imports-config-keyring-health:
+          files:
+            - "**/internal/runtime/**"
+            - "!**/*_test.go"
+          list-mode: lax
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/runtime may import only internal/config, internal/keyring and internal/health"
+          allow:
+            - "github.com/amscotti/jevlar/internal/config"
+            - "github.com/amscotti/jevlar/internal/keyring"
+            - "github.com/amscotti/jevlar/internal/health"
+        admin-imports-runtime-config-health:
+          files:
+            - "**/internal/admin/**"
+            - "!**/*_test.go"
+          list-mode: lax
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/admin may import only internal/runtime, internal/config, internal/health and internal/usage; never internal/proxy"
+          allow:
+            - "github.com/amscotti/jevlar/internal/runtime"
+            - "github.com/amscotti/jevlar/internal/config"
+            - "github.com/amscotti/jevlar/internal/health"
+            - "github.com/amscotti/jevlar/internal/usage"
+        app-imports-config-runtime-admin-metrics-health:
+          files:
+            - "**/internal/app/**"
+            - "!**/*_test.go"
+          list-mode: lax
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/app may import only internal/config, internal/runtime, internal/admin, internal/proxy, internal/metrics and internal/health"
+          allow:
+            - "github.com/amscotti/jevlar/internal/config"
+            - "github.com/amscotti/jevlar/internal/runtime"
+            - "github.com/amscotti/jevlar/internal/admin"
+            - "github.com/amscotti/jevlar/internal/proxy"
+            - "github.com/amscotti/jevlar/internal/metrics"
+            - "github.com/amscotti/jevlar/internal/health"
+            - "github.com/amscotti/jevlar/internal/keyring"
+            - "github.com/amscotti/jevlar/internal/usage"
+        proxy-imports-runtime-config-keyring-health-usage-metrics:
+          files:
+            - "**/internal/proxy/**"
+            - "!**/*_test.go"
+          list-mode: lax
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal"
+              desc: "internal/proxy may import only runtime, config, keyring, health, usage and metrics"
+          allow:
+            - "github.com/amscotti/jevlar/internal/runtime"
+            - "github.com/amscotti/jevlar/internal/config"
+            - "github.com/amscotti/jevlar/internal/keyring"
+            - "github.com/amscotti/jevlar/internal/health"
+            - "github.com/amscotti/jevlar/internal/usage"
+            - "github.com/amscotti/jevlar/internal/metrics"
+        no-testutil-in-production:
+          files:
+            - "$all"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/amscotti/jevlar/internal/testutil"
+              desc: "internal/testutil is for tests only; production code must not import it"
+
+    forbidigo:
+      forbid:
+        - pattern: 'os\.Getenv'
+          msg: "environment access belongs in internal/config"
+        - pattern: 'os\.LookupEnv'
+          msg: "environment access belongs in internal/config"
+
+    nolintlint:
+      # Every nolint must name the linters it silences and say why; unused
+      # directives are errors so stale silences cannot accumulate.
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    rules:
+      # internal/config owns environment access; that is the one place the
+      # forbidigo rule must not fire.
+      - path: '^internal/config/'
+        linters:
+          - forbidigo
+      # Test doubles legitimately dial loopback httptest servers, exec the
+      # freshly built binary, and read fixture files by variable path.
+      # Production code keeps the full gosec and forbidigo bar.
+      - path: '(_test\.go|internal/testutil/)'
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
