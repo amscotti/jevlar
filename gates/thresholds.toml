@@ -19,6 +19,7 @@ proxy   = 0.85
 health  = 0.90
 keyring = 0.90
 usage   = 0.90
+wire    = 0.90
 total   = 0.80
 
 [performance]

@@ -1,11 +1,3 @@
-// Package proxy implements Jevlar's request path: admission, inbound
-// authentication, bounded reading, target resolution, the attempt loop
-// with its deadline budget, byte-preserving forwarding and
-// commit-after-read response handling.
-//
-// The package owns no mutable cross-request state of its own: the health
-// registry, key pools, transports and concurrency slots are borrowed from
-// the runtime snapshot it loads once per request.
 package proxy
 
 import (
@@ -30,6 +22,7 @@ import (
 	"github.com/amscotti/jevlar/internal/metrics"
 	"github.com/amscotti/jevlar/internal/runtime"
 	"github.com/amscotti/jevlar/internal/usage"
+	"github.com/amscotti/jevlar/internal/wire"
 )
 
 const (
@@ -316,6 +309,7 @@ func (h *Handler) runAttempts(
 	// so the loop is also bounded by iterations to guarantee termination
 	// even when nothing is usable.
 	maxIterations := maxAttempts + len(targets)
+attemptLoop:
 	for iter := 0; attempts < maxAttempts && len(targets) > 0 && iter < maxIterations; iter++ {
 		remaining := time.Until(deadline)
 		if remaining < attemptFloorMS*time.Millisecond {
@@ -406,29 +400,47 @@ func (h *Handler) runAttempts(
 			attemptTimeout = attemptFloorMS * time.Millisecond
 		}
 
-		// A target may name a different model than the client asked for:
-		// splice exactly that value, leaving every other byte untouched.
-		// Forwarding keeps the body exactly as received; only a rewrite
-		// changes it, and a rewritten body is sent decoded (identity) since
-		// the compressed bytes no longer describe the new document.
+		// Prepare the outbound attempt body according to the target provider's
+		// wire format. For System One providers, keep ADR 0003 byte
+		// passthrough (splicing only "model" when remapped). For Gemini
+		// Decisions providers, translate from the immutable decoded
+		// inspectBody per attempt so mixed-wire failover works cleanly.
 		attemptBody := body
 		attemptEncoding := contentEncoding
-		if target.Model != span.Value {
-			rewritten, err := RewriteModel(inspectBody, span, target.Model)
+		attemptContentType := ""
+		switch p.WireFormat {
+		case config.WireGeminiDecisions:
+			translated, err := wire.TranslateGeminiRequest(inspectBody, clientHeader.Get("Content-Type"), target.Model)
 			if err != nil {
-				out = attemptOutcome{
-					kind: outcomeError, status: http.StatusInternalServerError,
-					errType: TypeInternal, message: "could not rewrite the model id",
+				return attemptOutcome{
+					kind:     outcomeError,
+					status:   http.StatusBadRequest,
+					errType:  TypeInvalidRequest,
+					message:  err.Error(),
+					attempts: attempts,
 				}
-				realFailures++
-				break
 			}
-			attemptBody = rewritten
+			attemptBody = translated
 			attemptEncoding = ""
+			attemptContentType = "application/json"
+		default:
+			if target.Model != span.Value {
+				rewritten, err := RewriteModel(inspectBody, span, target.Model)
+				if err != nil {
+					out = attemptOutcome{
+						kind: outcomeError, status: http.StatusInternalServerError,
+						errType: TypeInternal, message: "could not rewrite the model id",
+					}
+					realFailures++
+					break attemptLoop
+				}
+				attemptBody = rewritten
+				attemptEncoding = ""
+			}
 		}
 
 		attempts++
-		res := h.attemptOnce(parent, rt, p, requestedModel, attemptBody, attemptEncoding, clientHeader, reqID, attempts, attemptTimeout)
+		res := h.attemptOnce(parent, rt, p, requestedModel, target.Model, attemptBody, attemptEncoding, attemptContentType, clientHeader, reqID, attempts, attemptTimeout)
 		lastStatus = res.status
 		if res.saturated && !res.keyScoped && br != nil {
 			// No upstream call was made, so a half-open probe must be
@@ -573,8 +585,10 @@ func (h *Handler) attemptOnce(
 	rt *runtime.Runtime,
 	p *runtime.Provider,
 	alias string,
+	targetModel string,
 	body []byte,
 	contentEncoding string,
+	contentTypeOverride string,
 	clientHeader http.Header,
 	reqID string,
 	attempt int,
@@ -599,7 +613,7 @@ func (h *Handler) attemptOnce(
 		key    *health.Key
 		secret string
 	)
-	if p.Auth == "bearer" {
+	if p.Auth != "" && p.Auth != config.AuthNone {
 		if p.Pool == nil || p.Pool.Len() == 0 {
 			h.metric.Attempt(p.Name, "no_key")
 			return attemptOutcome{
@@ -627,7 +641,7 @@ func (h *Handler) attemptOnce(
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	req, err := buildUpstreamRequest(ctx, p, body, contentEncoding, clientHeader, secret, reqID, attempt)
+	req, err := buildUpstreamRequest(ctx, p, body, contentEncoding, contentTypeOverride, clientHeader, secret, reqID, attempt)
 	if err != nil {
 		h.metric.UpstreamError(p.Name, "build")
 		return attemptOutcome{kind: outcomeRetryable, status: http.StatusBadGateway, message: err.Error()}
@@ -635,7 +649,7 @@ func (h *Handler) attemptOnce(
 
 	client := &http.Client{Transport: p.Transport}
 	upstreamStarted := time.Now()
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // upstream URL is built solely from validated provider config (p.BaseURL + p.Path)
 	if err != nil {
 		if parent.Err() != nil {
 			return attemptOutcome{
@@ -710,8 +724,27 @@ func (h *Handler) attemptOnce(
 	copyResponseHeader(header, resp.Header)
 
 	status := resp.StatusCode
+	if p.WireFormat == config.WireGeminiDecisions && wire.IsGeminiInvalidKeyError(status, respBody) {
+		return h.handleInvalidKey(p, key, br, "upstream rejected the key (API_KEY_INVALID); re-enable after fixing the credential")
+	}
 	switch {
 	case status >= 200 && status < 300:
+		if p.WireFormat == config.WireGeminiDecisions {
+			normalized, err := wire.NormalizeGeminiResponse(respBody, targetModel)
+			if err != nil {
+				h.metric.Attempt(p.Name, "body_error")
+				h.metric.UpstreamError(p.Name, "body")
+				if br != nil {
+					br.RecordFailure()
+					h.syncBreaker(p.Name, br)
+				}
+				return attemptOutcome{
+					kind: outcomeRetryable, status: http.StatusBadGateway,
+					message: fmt.Sprintf("provider %q response could not be normalized", p.Name),
+				}
+			}
+			respBody = normalized
+		}
 		h.metric.Attempt(p.Name, "success")
 		if key != nil {
 			key.ResetConsecutive()
@@ -778,20 +811,7 @@ func (h *Handler) attemptOnce(
 		}
 		return res
 	case status == http.StatusUnauthorized:
-		h.metric.Attempt(p.Name, "auth_error")
-		h.metric.UpstreamError(p.Name, "auth")
-		if key != nil {
-			key.Disable("upstream rejected the key (401); re-enable after fixing the credential")
-			h.syncKeyState(p.Name, key)
-		}
-		if br != nil {
-			br.RecordSuccess() // the provider answered; the credential is wrong
-			h.syncBreaker(p.Name, br)
-		}
-		return attemptOutcome{
-			kind: outcomeRetryable, status: http.StatusBadGateway, keyScoped: true,
-			message: fmt.Sprintf("provider %q rejected its key", p.Name),
-		}
+		return h.handleInvalidKey(p, key, br, "upstream rejected the key (401); re-enable after fixing the credential")
 	case status == http.StatusForbidden:
 		// 403 is not proof of revocation: providers also use it for quota
 		// and plan limits, so disable nothing and cool the key instead.
@@ -825,6 +845,26 @@ func (h *Handler) attemptOnce(
 			kind: outcomeRetryable, status: http.StatusBadGateway,
 			message: fmt.Sprintf("provider %q returned %d", p.Name, status),
 		}
+	}
+}
+
+// handleInvalidKey disables the offending provider key (keeping the breaker
+// healthy since the upstream answered) and returns a retryable key-scoped
+// failure so another key or provider can serve the request.
+func (h *Handler) handleInvalidKey(p *runtime.Provider, key *health.Key, br *health.Breaker, reason string) attemptOutcome {
+	h.metric.Attempt(p.Name, "auth_error")
+	h.metric.UpstreamError(p.Name, "auth")
+	if key != nil {
+		key.Disable(reason)
+		h.syncKeyState(p.Name, key)
+	}
+	if br != nil {
+		br.RecordSuccess() // the provider answered; the credential is wrong
+		h.syncBreaker(p.Name, br)
+	}
+	return attemptOutcome{
+		kind: outcomeRetryable, status: http.StatusBadGateway, keyScoped: true,
+		message: fmt.Sprintf("provider %q rejected its key", p.Name),
 	}
 }
 

@@ -86,6 +86,7 @@ FUZZ_TIME="${FUZZ_TIME:-30s}"
 go test ./internal/proxy/ -run '^$' -fuzz FuzzFindModel -fuzztime "$FUZZ_TIME"
 go test ./internal/proxy/ -run '^$' -fuzz FuzzRewriteModel -fuzztime "$FUZZ_TIME"
 go test ./internal/config/ -run '^$' -fuzz FuzzExpand -fuzztime "$FUZZ_TIME"
+go test ./internal/wire/ -run '^$' -fuzz FuzzTranslateGeminiRequest -fuzztime "$FUZZ_TIME"
 """
 
 [tasks.soak]
