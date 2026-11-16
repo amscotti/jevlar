@@ -35,6 +35,13 @@ and this project adheres to
   `internal/wire`, `internal/config`, `internal/runtime`, `internal/admin`,
   `internal/app`, `internal/usage`, `internal/proxy`, and `cmd/jevlar`.
 
+### Security
+
+- Updated the pinned Go toolchain from `1.27.3` to `1.27.4` (`mise.toml`,
+  `Dockerfile`) to resolve `GO-2026-6859` (`net/http` `MaxBytesReader` header
+  race), upholding [ADR 0001](docs/adr/0001-go-1-27.md) and the
+  zero-vulnerability release requirement.
+
 ## [0.1.0] - 2026-11-02
 
 First release. Scope is deliberately narrow: one wire format, four
