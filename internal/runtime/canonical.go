@@ -77,6 +77,7 @@ func canonicalJSON(cfg *config.Config) []byte {
 			"base_url":        p.BaseURL,
 			"path":            p.Path,
 			"auth":            p.Auth,
+			"wire_format":     p.WireFormat,
 			"account":         p.Account,
 			"models":          models,
 			"timeout_ms":      p.TimeoutMs,

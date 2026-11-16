@@ -303,12 +303,60 @@ keys = [
 				{Field: `models."jev-latest".hysteresis_ms`, Msg: "must be at least 0"},
 			},
 		},
+		{
+			name: "row 30: x-goog-api-key auth requires at least one key",
+			doc: matrixDoc(
+				[2]string{`auth = "bearer"`, `auth = "x-goog-api-key"`},
+				[2]string{`api_keys = [{ id = "primary", value = "${TYPESAFE_API_KEY}" }]`, ""},
+			),
+			want: []ConfigError{{Field: "providers[0].api_keys", Msg: "x-goog-api-key auth requires at least one key"}},
+		},
+		{
+			name: "row 31: unsupported provider auth mode",
+			doc: matrixDoc(
+				[2]string{`auth = "bearer"`, `auth = "basic"`},
+			),
+			want: []ConfigError{{Field: "providers[0].auth", Msg: `must be "none", "bearer" or "x-goog-api-key"`}},
+		},
+		{
+			name: "row 32: unsupported provider wire_format",
+			doc: matrixDoc(
+				[2]string{`auth = "bearer"`, "auth = \"bearer\"\nwire_format = \"openai-chat\""},
+			),
+			want: []ConfigError{{Field: "providers[0].wire_format", Msg: `must be "systemone" or "gemini-decisions"`}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			checkErrors(t, tc.doc, tc.env, tc.want)
 		})
+	}
+}
+
+// TestValidationMatrix_ValidXGoogAPIKeyAndGeminiDecisions verifies that
+// auth = "x-goog-api-key" with at least one key and wire_format =
+// "gemini-decisions" parses, defaults and validates cleanly.
+func TestValidationMatrix_ValidXGoogAPIKeyAndGeminiDecisions(t *testing.T) {
+	t.Parallel()
+	doc := matrixDoc(
+		[2]string{`auth = "bearer"`, "auth = \"x-goog-api-key\"\nwire_format = \"gemini-decisions\""},
+	)
+	cfg, err := Parse([]byte(doc), fakeEnv(map[string]string{"TYPESAFE_API_KEY": "gm-secret"}))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if cfg.Providers[0].Auth != AuthXGoogAPIKey {
+		t.Errorf("Auth = %q, want %q", cfg.Providers[0].Auth, AuthXGoogAPIKey)
+	}
+	if cfg.Providers[0].WireFormat != WireGeminiDecisions {
+		t.Errorf("WireFormat = %q, want %q", cfg.Providers[0].WireFormat, WireGeminiDecisions)
+	}
+	if cfg.Providers[1].WireFormat != WireSystemOne {
+		t.Errorf("default WireFormat = %q, want %q", cfg.Providers[1].WireFormat, WireSystemOne)
 	}
 }
 

@@ -18,6 +18,7 @@
 //	      "base_url": "https://api.typesafe.ai",
 //	      "path": "/v1/systemone",
 //	      "auth": "bearer",
+//	      "wire_format": "systemone",
 //	      "account": "typesafe-main",
 //	      "models": ["jev-latest"],
 //	      "timeout_ms": 8000,
@@ -30,7 +31,19 @@
 //	    "jev-latest": [{"provider": "typesafe", "model": "jev-latest"}]
 //	  },
 //	  "auth": {"key_ids": ["app-prod", "batch"]},
-//	  "breaker": {"threshold": 5, "cooldown_ms": 30000}
+//	  "breaker": {"threshold": 5, "cooldown_ms": 30000},
+//	  "keys": [                              // per-key health (empty when unwired)
+//	    {"id": "primary", "state": "healthy", "inflight": 0, "consecutive_failures": 0}
+//	  ],
+//	  "breakers": [                          // per-provider circuit breaker state
+//	    {"provider": "typesafe", "state": "healthy", "consecutive_failures": 0}
+//	  ],
+//	  "accounts": [                          // per-account cooldown and remaining token budget (-1 = unlimited)
+//	    {"name": "typesafe-main", "cooling": false, "tokens_left": 15000000}
+//	  ],
+//	  "clients": [                           // per-client rate-limit state and remaining token budget (-1 = unlimited)
+//	    {"id": "app-prod", "limited": false, "tokens_left": 6000000}
+//	  ]
 //	}
 //
 // Providers are listed in configuration order. Key material never

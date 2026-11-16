@@ -1,9 +1,9 @@
 # Complete example of the Jevlar configuration surface. Every section and
 # field is shown; the file validates when TYPESAFE_API_KEY,
-# UPSTAGE_API_KEY, JEVLAR_APP_PROD_HASH and JEVLAR_BATCH_HASH are set and
-# the secondary key's secret mount exists (see configs/container.toml for a
-# smaller, runnable container example). Field documentation lives in
-# internal/config.
+# UPSTAGE_API_KEY, GEMINI_API_KEY, JEVLAR_APP_PROD_HASH and
+# JEVLAR_BATCH_HASH are set and the secondary key's secret mount exists
+# (see configs/container.toml for a smaller, runnable container example).
+# Field documentation lives in internal/config.
 config_version = 1
 
 [server]
@@ -43,6 +43,10 @@ tpm = 15_000_000
 rpm = 100
 tpm = 250_000
 
+[accounts.gemini-main]
+rpm = 60
+tpm = 1_000_000
+
 [[providers]]
 name            = "typesafe"
 base_url        = "https://api.typesafe.ai"
@@ -76,6 +80,17 @@ models          = ["solar-decide"]
 timeout_ms      = 8_000
 api_keys = [{ id = "upstage-1", value = "${UPSTAGE_API_KEY}" }]
 
+[[providers]]
+name            = "gemini"
+base_url        = "https://generativelanguage.googleapis.com"
+path            = "/v1beta/decisions"
+auth            = "x-goog-api-key"
+wire_format     = "gemini-decisions"  # systemone (default) | gemini-decisions
+account         = "gemini-main"
+models          = ["gemini-decision-1"]
+timeout_ms      = 8_000
+api_keys = [{ id = "gemini-1", value = "${GEMINI_API_KEY}" }]
+
 # Alias → ordered (provider, model) targets. The requested model may differ per target.
 [models."jev-latest"]
 targets = [
@@ -87,6 +102,11 @@ max_attempts  = 3
 ewma_alpha    = 0.2               # fastest only
 hysteresis_ms = 15                # fastest only
 explore_every = 100               # fastest only
+
+[models."gemini-decision-1"]
+targets = [
+  { provider = "gemini", model = "gemini-decision-1" },
+]
 
 [breaker]
 threshold   = 5

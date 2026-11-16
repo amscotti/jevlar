@@ -27,3 +27,12 @@ the `model` splice (ADR 0003) is the only body inspection on the hot path.
   unsupported rather than half-supported.
 - A future adapter is a new surface with its own ADR, not a retrofit of the
   proxy handler.
+
+## Addendum (2026-11-16)
+
+[ADR 0009](0009-gemini-decisions-wire-format.md) introduces one scoped
+exception for `providers[].wire_format = "gemini-decisions"`: Google's Gemini
+Decisions API preserves System One's question/answer model (`noul`, `choice`,
+`score`) with a different JSON/auth envelope. All translation is isolated in the
+stdlib-only `internal/wire` package so the default `wire_format = "systemone"`
+path remains untouched.

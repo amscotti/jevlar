@@ -17,7 +17,7 @@
 # --- build ---------------------------------------------------------------
 # Build on the runner's native platform and cross-compile to the image's
 # target, so multi-platform builds do not need QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4 AS build
 
 WORKDIR /src
 # Cache dependencies separately from sources.

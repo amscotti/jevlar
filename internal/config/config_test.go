@@ -40,7 +40,7 @@ func TestParse_MinimalConfigDecodes(t *testing.T) {
 		t.Fatalf("got %d providers, want 1", len(cfg.Providers))
 	}
 	p := cfg.Providers[0]
-	if p.Name != "loopback" || p.BaseURL != "http://127.0.0.1:9" || p.Path != "/v1/systemone" || p.Auth != "none" {
+	if p.Name != "loopback" || p.BaseURL != "http://127.0.0.1:9" || p.Path != "/v1/systemone" || p.Auth != "none" || p.WireFormat != WireSystemOne {
 		t.Errorf("provider decoded as %+v", p)
 	}
 }
@@ -547,6 +547,18 @@ func TestConfigError_ErrorRendersFieldPath(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	if got, want := (ConfigError{Msg: "boom"}).Error(), "boom"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWarning_String(t *testing.T) {
+	t.Parallel()
+	if got, want := (Warning{Field: "providers[0].api_keys[0].value", Msg: "literal key value"}).String(),
+		"providers[0].api_keys[0].value: literal key value"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got, want := (Warning{Msg: "config file is group/world-accessible"}).String(),
+		"config file is group/world-accessible"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

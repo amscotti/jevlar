@@ -363,7 +363,7 @@ func (s *server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	ready := false
 	if rt != nil {
 		for _, p := range rt.Providers {
-			if p.Auth == "none" {
+			if p.Auth == config.AuthNone {
 				// A keyless provider is usable as long as its breaker is not
 				// holding it open.
 				if b := s.health.Breaker(p.Name); b == nil || !b.Open() {
@@ -372,7 +372,7 @@ func (s *server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 				}
 				continue
 			}
-			// A bearer provider is ready only when a key can actually be
+			// A key-authenticated provider is ready only when a key can actually be
 			// selected: every key disabled or cooling means not ready.
 			if p.Pool != nil && p.Pool.Available() {
 				ready = true

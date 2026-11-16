@@ -106,7 +106,7 @@ func TestBuild_ProducesProviderViewsAndModelTable(t *testing.T) {
 	if ts.MaxConc != 64 {
 		t.Errorf("max concurrency = %d, want 64", ts.MaxConc)
 	}
-	if ts.Account != "typesafe-main" || ts.Auth != "bearer" || ts.Path != "/v1/systemone" {
+	if ts.Account != "typesafe-main" || ts.Auth != "bearer" || ts.WireFormat != config.WireSystemOne || ts.Path != "/v1/systemone" {
 		t.Errorf("provider view = %+v", ts)
 	}
 	if len(ts.Keys) != 1 || ts.Keys[0].ID != "primary" || ts.Keys[0].Value != "ts-secret" {
@@ -166,6 +166,8 @@ func TestConfigHash_ChangesWhenValuesChange(t *testing.T) {
 		"routing policy":      strings.Replace(baseDoc, "policy = \"priority\"", "policy = \"fastest\"", 1),
 		"log level":           strings.Replace(baseDoc, "listen = \"127.0.0.1:18080\"", "listen = \"127.0.0.1:18080\"\nlog_level = \"warn\"", 1),
 		"breaker cooldown":    strings.Replace(baseDoc, "cooldown_ms = 30000", "cooldown_ms = 45000", 1),
+		"wire format":         strings.Replace(baseDoc, "auth = \"bearer\"", "auth = \"bearer\"\nwire_format = \"gemini-decisions\"", 1),
+		"auth mode":           strings.Replace(baseDoc, "auth = \"bearer\"", "auth = \"x-goog-api-key\"", 1),
 	}
 	for name, doc := range cases {
 		other, _ := build(t, doc)
@@ -274,5 +276,50 @@ func TestConfigHash_CoversModelMetadata(t *testing.T) {
 	changedDate.Models["m"] = m
 	if runtime.ConfigHash(changedDate) == a {
 		t.Fatal("changing release_date did not change the config hash")
+	}
+}
+
+// TestProvider_SecretLooksUpByID verifies secret lookup returns the resolved
+// value for configured keys and false for unknown ids.
+func TestProvider_SecretLooksUpByID(t *testing.T) {
+	t.Parallel()
+	rt, _ := build(t, baseDoc)
+	ts := rt.Providers["typesafe"]
+	if secret, ok := ts.Secret("primary"); !ok || secret != "ts-secret" {
+		t.Errorf("Secret(primary) = (%q, %v), want (%q, true)", secret, ok, "ts-secret")
+	}
+	if secret, ok := ts.Secret("missing"); ok || secret != "" {
+		t.Errorf("Secret(missing) = (%q, %v), want (\"\", false)", secret, ok)
+	}
+}
+
+// TestBuild_PopulatesWireFormat verifies Build preserves configured wire_format
+// values and defaults an empty WireFormat to config.WireSystemOne.
+func TestBuild_PopulatesWireFormat(t *testing.T) {
+	t.Parallel()
+	doc := strings.Replace(baseDoc, "auth = \"bearer\"", "auth = \"x-goog-api-key\"\nwire_format = \"gemini-decisions\"", 1)
+	rt, _ := build(t, doc)
+	if got := rt.Providers["typesafe"].WireFormat; got != config.WireGeminiDecisions {
+		t.Errorf("WireFormat = %q, want %q", got, config.WireGeminiDecisions)
+	}
+	if got := rt.Providers["loopback"].WireFormat; got != config.WireSystemOne {
+		t.Errorf("defaulted WireFormat = %q, want %q", got, config.WireSystemOne)
+	}
+
+	// Direct Build without Parse (leaving WireFormat empty) also defaults.
+	cfg := &config.Config{
+		ConfigVersion: 1,
+		Server:        config.Server{Listen: "127.0.0.1:0", MaxResponseBytes: 1024},
+		Providers: []config.Provider{{
+			Name: "raw", BaseURL: "https://api.example", Path: "/v1/systemone",
+			Auth: config.AuthNone, TimeoutMs: 1000, MaxConcurrency: 1,
+		}},
+	}
+	rawRT, err := runtime.Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := rawRT.Providers["raw"].WireFormat; got != config.WireSystemOne {
+		t.Errorf("raw WireFormat = %q, want %q", got, config.WireSystemOne)
 	}
 }

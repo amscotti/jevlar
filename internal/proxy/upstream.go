@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/amscotti/jevlar/internal/config"
 	"github.com/amscotti/jevlar/internal/runtime"
 )
 
@@ -50,13 +51,15 @@ func upstreamURL(p *runtime.Provider) string {
 // body. The body is re-read from the buffer on every attempt, so a retry
 // after a partial write still sends the whole request.
 //
-// The client's Authorization header never reaches the provider: it is
-// replaced by the selected provider key (or removed for auth = "none").
+// The client's Authorization and X-Goog-Api-Key headers never reach the
+// provider: both are stripped and replaced by the selected provider key
+// according to p.Auth (or removed for auth = "none").
 func buildUpstreamRequest(
 	ctx context.Context,
 	p *runtime.Provider,
 	body []byte,
 	contentEncoding string,
+	contentTypeOverride string,
 	clientHeader http.Header,
 	secret string,
 	requestID string,
@@ -69,6 +72,7 @@ func buildUpstreamRequest(
 	copied := clientHeader.Clone()
 	stripHopByHop(copied)
 	copied.Del("Authorization")
+	copied.Del("X-Goog-Api-Key")
 	copied.Del("Host")
 	copied.Del("Content-Length")
 	// Jevlar control headers are for the gateway, not the provider.
@@ -82,18 +86,28 @@ func buildUpstreamRequest(
 	// block stays readable; the pooled transport disables auto-gzip too.
 	copied.Set("Accept-Encoding", "identity")
 	// The request body is forwarded with whatever encoding it arrived in,
-	// except when Jevlar rewrote it: the rewritten document is sent decoded.
+	// except when Jevlar rewrote or translated it: that body is sent decoded.
 	if contentEncoding == "" {
 		copied.Del("Content-Encoding")
 	} else {
 		copied.Set("Content-Encoding", contentEncoding)
 	}
 	req.Header = copied
+	if contentTypeOverride != "" {
+		req.Header.Set("Content-Type", contentTypeOverride)
+	}
 	req.Header.Set("X-Request-Id", requestID)
 	req.Header.Set("X-Jevlar-Attempt", strconv.Itoa(attempt))
 
-	if p.Auth == "bearer" && secret != "" {
-		req.Header.Set("Authorization", "Bearer "+secret)
+	switch p.Auth {
+	case config.AuthBearer:
+		if secret != "" {
+			req.Header.Set("Authorization", "Bearer "+secret)
+		}
+	case config.AuthXGoogAPIKey:
+		if secret != "" {
+			req.Header.Set("X-Goog-Api-Key", secret)
+		}
 	}
 	return req, nil
 }

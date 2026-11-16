@@ -1,19 +1,3 @@
-// Package runtime holds the immutable Runtime snapshot a request is served
-// against: the validated configuration, the model-alias routing table and
-// the immutable provider views with their resolved key material.
-// Snapshots are swapped wholesale by internal/app; a request loads a
-// snapshot once at admission and never observes a reload mid-flight.
-//
-// This package owns the configuration hash: a SHA-256 over a canonical
-// serialisation of the resolved configuration (see canonical.go), so
-// comments and formatting never count as a change while any resolved
-// non-secret value does. Secret values are deliberately excluded — the
-// hash is published by /admin/status and must not become a verifier of
-// key material.
-//
-// The package is the only one that composes the configuration with
-// routing and key material. Transports and key pools are borrowed from
-// later subsystems and are not part of the snapshot yet.
 package runtime
 
 import (
@@ -85,8 +69,10 @@ type Provider struct {
 	BaseURL *url.URL
 	// Path is the upstream request path.
 	Path string
-	// Auth is the upstream auth mode ("bearer" or "none").
+	// Auth is the upstream auth mode ("bearer", "x-goog-api-key" or "none").
 	Auth string
+	// WireFormat is the upstream wire protocol ("systemone" or "gemini-decisions").
+	WireFormat string
 	// Account names the provider's limit group; empty when ungrouped.
 	Account string
 	// Timeout bounds one upstream attempt on this provider.
@@ -158,11 +144,16 @@ func Build(cfg *config.Config) (*Runtime, error) {
 		for _, k := range p.APIKeys {
 			keys = append(keys, KeySpec{ID: k.ID, Value: k.Resolved})
 		}
+		wireFormat := p.WireFormat
+		if wireFormat == "" {
+			wireFormat = config.WireSystemOne
+		}
 		providers[p.Name] = &Provider{
 			Name:             p.Name,
 			BaseURL:          base,
 			Path:             p.Path,
 			Auth:             p.Auth,
+			WireFormat:       wireFormat,
 			Account:          p.Account,
 			Timeout:          time.Duration(p.TimeoutMs) * time.Millisecond,
 			MaxConc:          p.MaxConcurrency,

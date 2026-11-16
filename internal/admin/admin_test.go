@@ -135,6 +135,7 @@ func TestStatus_ReturnsDocumentedShape(t *testing.T) {
 			BaseURL        string   `json:"base_url"`
 			Path           string   `json:"path"`
 			Auth           string   `json:"auth"`
+			WireFormat     string   `json:"wire_format"`
 			Account        string   `json:"account"`
 			Models         []string `json:"models"`
 			TimeoutMs      int64    `json:"timeout_ms"`
@@ -171,7 +172,7 @@ func TestStatus_ReturnsDocumentedShape(t *testing.T) {
 	}
 	p := body.Providers[0]
 	if p.Name != "typesafe" || p.BaseURL != "https://api.typesafe.ai" || p.Path != "/v1/systemone" ||
-		p.Auth != "bearer" || p.Account != "main" || p.TimeoutMs != 8000 || p.MaxConcurrency != 64 ||
+		p.Auth != "bearer" || p.WireFormat != "systemone" || p.Account != "main" || p.TimeoutMs != 8000 || p.MaxConcurrency != 64 ||
 		p.KeyCount != 1 || len(p.KeyIDs) != 1 || p.KeyIDs[0] != "primary" {
 		t.Errorf("provider summary = %+v", p)
 	}
@@ -187,6 +188,27 @@ func TestStatus_ReturnsDocumentedShape(t *testing.T) {
 	}
 	if body.Breaker.Threshold != 5 || body.Breaker.CooldownMs != 30000 {
 		t.Errorf("breaker = %+v", body.Breaker)
+	}
+}
+
+// TestStatus_ReportsWireFormatAndXGoogAPIKey verifies /admin/status emits
+// explicit wire_format and x-goog-api-key auth values.
+func TestStatus_ReportsWireFormatAndXGoogAPIKey(t *testing.T) {
+	t.Parallel()
+	doc := func() string {
+		return strings.Replace(statusDoc(), "auth = \"bearer\"", "auth = \"x-goog-api-key\"\nwire_format = \"gemini-decisions\"", 1)
+	}
+	a := newAdmin(t, admin.Options{Version: "v0.1.0-test"}, doc)
+	rec := call(t, a, http.MethodGet, "/admin/status", "127.0.0.1:55555", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var got admin.StatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Providers) != 1 || got.Providers[0].Auth != "x-goog-api-key" || got.Providers[0].WireFormat != "gemini-decisions" {
+		t.Fatalf("providers = %+v, want x-goog-api-key + gemini-decisions", got.Providers)
 	}
 }
 

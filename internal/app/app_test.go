@@ -21,6 +21,7 @@ import (
 
 	"github.com/amscotti/jevlar/internal/app"
 	"github.com/amscotti/jevlar/internal/config"
+	"github.com/amscotti/jevlar/internal/testutil"
 )
 
 // capture is a slog.Handler that records every record; Serve logs from its
@@ -937,6 +938,133 @@ func TestServe_ReadyzAndModelsSurface(t *testing.T) {
 	status, _ = get(t, "http://"+f.mainAddr(t)+"/v1/systemone")
 	if status != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /v1/systemone = %d, want 405", status)
+	}
+
+	f.signals <- syscall.SIGTERM
+	if err := f.waitDone(t); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+}
+
+// TestServe_ReadyzAcrossAuthNoneAndXGoogAPIKey verifies /readyz on a running
+// server across auth = "none" (closed -> 200, open -> 503, half-open after
+// cooldown + reload -> 200 with breaker gauge 1) and auth = "x-goog-api-key"
+// (healthy key -> 200).
+func TestServe_ReadyzAcrossAuthNoneAndXGoogAPIKey(t *testing.T) {
+	t.Parallel()
+	up := testutil.NewFakeUpstream(t)
+	up.SetHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	mainPort := freePort(t)
+	adminPort := freePort(t)
+	doc := fmt.Sprintf(`
+config_version = 1
+
+[server]
+listen = "127.0.0.1:%d"
+admin_listen = "127.0.0.1:%d"
+request_timeout_ms = 5000
+shutdown_grace_ms = 1000
+
+[auth]
+keys = [{ id = "dev", hash = %q }]
+
+[[providers]]
+name = "loopback"
+base_url = %q
+path = "/v1/systemone"
+auth = "none"
+models = ["m-none"]
+timeout_ms = 2000
+
+[models."m-none"]
+targets = [{ provider = "loopback", model = "m-none" }]
+max_attempts = 1
+
+[breaker]
+threshold = 2
+cooldown_ms = 150
+`, mainPort, adminPort, sha256Hex(devToken), up.URL())
+
+	f := startServe(t, doc)
+	mainAddr := f.mainAddr(t)
+	adminAddr := f.adminAddr(t)
+
+	// Closed breaker -> /readyz 200.
+	if status, body := get(t, "http://"+mainAddr+"/readyz"); status != http.StatusOK || !strings.Contains(body, `"ready"`) {
+		t.Fatalf("/readyz initial = %d %q, want 200 ready", status, body)
+	}
+
+	// Trip the breaker with 2 upstream 500s.
+	for range 2 {
+		req, err := http.NewRequest(http.MethodPost, "http://"+mainAddr+"/v1/systemone", strings.NewReader(`{"model":"m-none","state":"x"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+devToken)
+		resp, err := fetchClient.Do(req)
+		if err != nil {
+			t.Fatalf("proxy request: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Open breaker -> /readyz 503.
+	if status, body := get(t, "http://"+mainAddr+"/readyz"); status != http.StatusServiceUnavailable || !strings.Contains(body, `"not_ready"`) {
+		t.Fatalf("/readyz with open breaker = %d %q, want 503 not_ready", status, body)
+	}
+
+	// Wait past the 150ms cooldown so the breaker becomes half-open, then
+	// reload so attachHealth runs syncBreakerGauge on the half-open state.
+	time.Sleep(200 * time.Millisecond)
+	if code, body := postBody(t, "http://"+adminAddr+"/admin/reload"); code != http.StatusOK {
+		t.Fatalf("reload = %d %s", code, body)
+	}
+	if status, body := get(t, "http://"+mainAddr+"/readyz"); status != http.StatusOK || !strings.Contains(body, `"ready"`) {
+		t.Fatalf("/readyz half-open = %d %q, want 200 ready", status, body)
+	}
+	if status, body := get(t, "http://"+mainAddr+"/metrics"); status != http.StatusOK || !strings.Contains(body, `jevlar_breaker_state{provider="loopback"} 1`) {
+		t.Fatalf("/metrics = %d, want half-open breaker gauge 1 in:\n%s", status, body)
+	}
+
+	// Reload to an x-goog-api-key provider with a healthy key -> /readyz 200.
+	keyDoc := fmt.Sprintf(`
+config_version = 1
+
+[server]
+listen = "127.0.0.1:%d"
+admin_listen = "127.0.0.1:%d"
+request_timeout_ms = 5000
+shutdown_grace_ms = 1000
+
+[auth]
+keys = [{ id = "dev", hash = %q }]
+
+[[providers]]
+name = "gemini"
+base_url = %q
+path = "/v1beta/decisions"
+auth = "x-goog-api-key"
+wire_format = "gemini-decisions"
+models = ["gemini-decision-1"]
+timeout_ms = 2000
+api_keys = [{ id = "g1", value = "key-secret" }]
+
+[models."gemini-decision-1"]
+targets = [{ provider = "gemini", model = "gemini-decision-1" }]
+
+[breaker]
+threshold = 2
+cooldown_ms = 150
+`, mainPort, adminPort, sha256Hex(devToken), up.URL())
+	f.rewriteConfig(t, keyDoc)
+	if code, body := postBody(t, "http://"+adminAddr+"/admin/reload"); code != http.StatusOK {
+		t.Fatalf("reload to x-goog-api-key = %d %s", code, body)
+	}
+	if status, body := get(t, "http://"+mainAddr+"/readyz"); status != http.StatusOK || !strings.Contains(body, `"ready"`) {
+		t.Fatalf("/readyz x-goog-api-key healthy = %d %q, want 200 ready", status, body)
 	}
 
 	f.signals <- syscall.SIGTERM

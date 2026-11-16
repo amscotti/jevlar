@@ -43,6 +43,30 @@ func TestParse_ReadsTheDocumentedPaths(t *testing.T) {
 			want:   Usage{HasCost: true},
 			wantOK: true,
 		},
+		{
+			name:   "gemini total_input_tokens and total_output_tokens",
+			body:   `{"usage":{"total_input_tokens":640,"total_output_tokens":0,"total_tokens":640}}`,
+			want:   Usage{InputTokens: 640, OutputTokens: 0},
+			wantOK: true,
+		},
+		{
+			name:   "gemini total_input_tokens only",
+			body:   `{"usage":{"total_input_tokens":250}}`,
+			want:   Usage{InputTokens: 250},
+			wantOK: true,
+		},
+		{
+			name:   "gemini total_output_tokens fallback",
+			body:   `{"usage":{"total_output_tokens":18}}`,
+			want:   Usage{OutputTokens: 18},
+			wantOK: true,
+		},
+		{
+			name:   "input_tokens takes precedence over total_input_tokens",
+			body:   `{"usage":{"input_tokens":12,"output_tokens":3,"total_input_tokens":999,"total_output_tokens":888}}`,
+			want:   Usage{InputTokens: 12, OutputTokens: 3},
+			wantOK: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
