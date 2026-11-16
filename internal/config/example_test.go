@@ -12,7 +12,7 @@ import (
 
 // exampleEnv is the environment the committed example configuration needs:
 // the two inbound-key hashes must be valid 64-hex values (the file pins
-// their shape) and the two provider key references must be set.
+// their shape) and the three provider key references must be set.
 func exampleEnv() map[string]string {
 	hash := func(token string) string {
 		sum := sha256.Sum256([]byte(token))
@@ -23,6 +23,7 @@ func exampleEnv() map[string]string {
 		"JEVLAR_BATCH_HASH":    hash("batch-token"),
 		"TYPESAFE_API_KEY":     "ts-example-key",
 		"UPSTAGE_API_KEY":      "up-example-key",
+		"GEMINI_API_KEY":       "gm-example-key",
 	}
 }
 
@@ -75,6 +76,19 @@ func TestExampleConfigValidatesAsIs(t *testing.T) {
 	}
 	if got := cfg.Models["jev-latest"].Targets[1].Model; got != "nimble" {
 		t.Errorf("jev-latest fallback model = %q, want nimble", got)
+	}
+	if len(cfg.Providers) != 4 {
+		t.Fatalf("providers = %d, want 4", len(cfg.Providers))
+	}
+	gm := cfg.Providers[3]
+	if gm.Name != "gemini" || gm.Auth != AuthXGoogAPIKey || gm.WireFormat != WireGeminiDecisions || gm.Account != "gemini-main" {
+		t.Errorf("gemini provider = %+v", gm)
+	}
+	if len(gm.APIKeys) != 1 || gm.APIKeys[0].Resolved != "gm-example-key" {
+		t.Errorf("gemini api_keys = %+v, want resolved gm-example-key", gm.APIKeys)
+	}
+	if got := cfg.Models["gemini-decision-1"].Targets; len(got) != 1 || got[0].Provider != "gemini" || got[0].Model != "gemini-decision-1" {
+		t.Errorf("gemini-decision-1 targets = %+v", got)
 	}
 	if len(cfg.Auth.Keys) != 2 {
 		t.Errorf("auth keys = %d, want 2", len(cfg.Auth.Keys))

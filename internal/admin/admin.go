@@ -190,6 +190,7 @@ type ProviderStatus struct {
 	BaseURL        string   `json:"base_url"`
 	Path           string   `json:"path"`
 	Auth           string   `json:"auth"`
+	WireFormat     string   `json:"wire_format"`
 	Account        string   `json:"account"`
 	Models         []string `json:"models"`
 	TimeoutMs      int64    `json:"timeout_ms"`
@@ -251,6 +252,7 @@ func (a *Admin) handleStatus(w http.ResponseWriter, r *http.Request) {
 			BaseURL:        view.BaseURL.String(),
 			Path:           view.Path,
 			Auth:           view.Auth,
+			WireFormat:     view.WireFormat,
 			Account:        view.Account,
 			Models:         models,
 			TimeoutMs:      view.Timeout.Milliseconds(),

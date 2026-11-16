@@ -298,8 +298,15 @@ type Provider struct {
 	// start with "/" and contain no "..".
 	Path string `toml:"path"`
 	// Auth selects how Jevlar authenticates upstream: "bearer" (a key from
-	// api_keys is sent as the bearer token) or "none"; empty means "none".
+	// api_keys is sent as the bearer token), "x-goog-api-key" (a key from
+	// api_keys is sent in the X-Goog-Api-Key header) or "none"; empty means
+	// "none".
 	Auth string `toml:"auth"`
+	// WireFormat selects the upstream wire protocol: "systemone" (pure
+	// byte passthrough, the default) or "gemini-decisions" (translates
+	// System One requests and responses for Google's Gemini Decisions API).
+	// Empty means WireSystemOne.
+	WireFormat string `toml:"wire_format"`
 	// Account names the account whose limits apply to this provider's
 	// keys; empty means no account limits. When set it must exist in
 	// [accounts].
@@ -316,10 +323,10 @@ type Provider struct {
 	// means the default (DefaultProviderMaxConcurrency). Jevlar rejects
 	// rather than queues when the cap is saturated.
 	MaxConcurrency int `toml:"max_concurrency"`
-	// APIKeys is the provider's key pool. Bearer auth requires at least
-	// one key; auth "none" must define none. Each key carries its secret
-	// either as an expanded value (normally a ${VAR} reference) or in a
-	// file named by value_file.
+	// APIKeys is the provider's key pool. Key-authenticated modes ("bearer"
+	// and "x-goog-api-key") require at least one key; auth "none" must
+	// define none. Each key carries its secret either as an expanded value
+	// (normally a ${VAR} reference) or in a file named by value_file.
 	APIKeys []APIKey `toml:"api_keys"`
 }
 
@@ -331,21 +338,34 @@ const (
 	// DefaultProviderMaxConcurrency is applied when
 	// providers[].max_concurrency is unset.
 	DefaultProviderMaxConcurrency = 64
+	// DefaultWireFormat is applied when providers[].wire_format is unset.
+	DefaultWireFormat = "systemone"
 )
 
 // Provider auth modes.
 const (
 	// AuthBearer sends an api_keys entry as the upstream bearer token.
 	AuthBearer = "bearer"
+	// AuthXGoogAPIKey sends an api_keys entry in the X-Goog-Api-Key header.
+	AuthXGoogAPIKey = "x-goog-api-key" //nolint:gosec // auth mode identifier naming the HTTP header, not a credential
 	// AuthNone sends no upstream credentials.
 	AuthNone = "none"
 )
 
+// Provider wire formats.
+const (
+	// WireSystemOne forwards System One payloads byte-for-byte.
+	WireSystemOne = "systemone"
+	// WireGeminiDecisions translates System One payloads to/from Google's
+	// Gemini Decisions API format.
+	WireGeminiDecisions = "gemini-decisions"
+)
+
 // APIKey is one upstream key. Exactly one of Value or ValueFile must be
-// set for bearer-auth providers: Value normally holds a ${VAR} reference
-// expanded at load and reload; ValueFile names a file the secret is read
-// from at load and reload (a trailing newline is trimmed). The file must
-// be a regular file and, by default, not group/world-accessible (a
+// set for key-authenticated providers: Value normally holds a ${VAR}
+// reference expanded at load and reload; ValueFile names a file the secret
+// is read from at load and reload (a trailing newline is trimmed). The file
+// must be a regular file and, by default, not group/world-accessible (a
 // warning; a load error under security.strict_file_permissions).
 type APIKey struct {
 	// ID identifies the key in logs, metrics and /admin/status.
@@ -617,6 +637,9 @@ func (c *Config) applyDefaults() {
 		}
 		if c.Providers[i].Auth == "" {
 			c.Providers[i].Auth = AuthNone
+		}
+		if c.Providers[i].WireFormat == "" {
+			c.Providers[i].WireFormat = WireSystemOne
 		}
 	}
 	for name := range c.Models {

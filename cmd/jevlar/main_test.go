@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amscotti/jevlar/internal/config"
 	"github.com/amscotti/jevlar/internal/testutil"
 )
 
@@ -501,6 +504,7 @@ func TestJevlar_CheckAcceptsTheFullExampleConfig(t *testing.T) {
 		"JEVLAR_BATCH_HASH="+hashOf("batch-token"),
 		"TYPESAFE_API_KEY=ts-example-key",
 		"UPSTAGE_API_KEY=up-example-key",
+		"GEMINI_API_KEY=gm-example-key",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -754,5 +758,166 @@ auth = "none"
 	out, code = runJevlar(t, bin, "healthcheck", "--config", path)
 	if code == 0 {
 		t.Fatalf("healthcheck against a closed listener exited 0; output:\n%s", out)
+	}
+}
+
+// TestRun_HealthcheckInProcess covers runHealthcheck directly across 200 OK,
+// non-200 status, unreachable port, wildcard 0.0.0.0 rewrite, missing --config
+// and invalid configuration.
+func TestRun_HealthcheckInProcess(t *testing.T) {
+	t.Parallel()
+
+	healthDoc := func(listen string) string {
+		return fmt.Sprintf(`
+config_version = 1
+
+[server]
+listen = %q
+
+[[providers]]
+name = "loop"
+base_url = "http://127.0.0.1:9"
+path = "/v1/systemone"
+auth = "none"
+`, listen)
+	}
+
+	t.Run("200 OK on loopback server", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/healthz" {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":"ok"}`)
+		}))
+		defer srv.Close()
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatalf("parse server URL: %v", err)
+		}
+		cfgPath := writeConfig(t, healthDoc(u.Host))
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"healthcheck", "--config", cfgPath}, &stdout, &stderr); code != exitOK {
+			t.Fatalf("exit = %d, want %d; stderr: %s", code, exitOK, stderr.String())
+		}
+	})
+
+	t.Run("wildcard 0.0.0.0 rewrites to loopback", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/healthz" {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatalf("parse server URL: %v", err)
+		}
+		_, port, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			t.Fatalf("split host port: %v", err)
+		}
+		cfgPath := writeConfig(t, healthDoc("0.0.0.0:"+port))
+		var stderr bytes.Buffer
+		if code := runHealthcheck([]string{"--config", cfgPath}, &stderr); code != exitOK {
+			t.Fatalf("exit = %d, want %d; stderr: %s", code, exitOK, stderr.String())
+		}
+	})
+
+	t.Run("non-200 status returns exitStartup", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatalf("parse server URL: %v", err)
+		}
+		cfgPath := writeConfig(t, healthDoc(u.Host))
+		var stderr bytes.Buffer
+		if code := runHealthcheck([]string{"--config", cfgPath}, &stderr); code != exitStartup {
+			t.Fatalf("exit = %d, want %d; stderr: %s", code, exitStartup, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "status 503") {
+			t.Errorf("stderr %q lacks status 503", stderr.String())
+		}
+	})
+
+	t.Run("unreachable port returns exitStartup", func(t *testing.T) {
+		t.Parallel()
+		port := testutil.FreeLoopbackPort(t)
+		cfgPath := writeConfig(t, healthDoc(fmt.Sprintf("127.0.0.1:%d", port)))
+		var stderr bytes.Buffer
+		if code := runHealthcheck([]string{"--config", cfgPath}, &stderr); code != exitStartup {
+			t.Fatalf("exit = %d, want %d; stderr: %s", code, exitStartup, stderr.String())
+		}
+	})
+
+	t.Run("missing --config returns exitUsage", func(t *testing.T) {
+		t.Parallel()
+		var stderr bytes.Buffer
+		if code := runHealthcheck(nil, &stderr); code != exitUsage {
+			t.Fatalf("exit = %d, want %d; stderr: %s", code, exitUsage, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "usage: jevlar healthcheck --config") {
+			t.Errorf("stderr %q lacks usage message", stderr.String())
+		}
+	})
+
+	t.Run("invalid config returns exitConfig", func(t *testing.T) {
+		t.Parallel()
+		var stderr bytes.Buffer
+		absent := filepath.Join(t.TempDir(), "absent.toml")
+		if code := runHealthcheck([]string{"--config", absent}, &stderr); code != exitConfig {
+			t.Fatalf("missing file: exit = %d, want %d; stderr: %s", code, exitConfig, stderr.String())
+		}
+
+		stderr.Reset()
+		badListen := writeConfig(t, healthDoc("not-a-host-port"))
+		if code := runHealthcheck([]string{"--config", badListen}, &stderr); code != exitConfig {
+			t.Fatalf("bad listen: exit = %d, want %d; stderr: %s", code, exitConfig, stderr.String())
+		}
+	})
+}
+
+// TestLogConfigWarnings_EmitsWarnLog verifies load-time warnings (such as
+// literal key values) are emitted at WARN level with their field path.
+func TestLogConfigWarnings_EmitsWarnLog(t *testing.T) {
+	t.Parallel()
+	doc := `
+config_version = 1
+
+[server]
+listen = "127.0.0.1:18080"
+
+[[providers]]
+name = "typesafe"
+base_url = "https://api.typesafe.ai"
+path = "/v1/systemone"
+auth = "bearer"
+api_keys = [{ id = "primary", value = "literal-secret-key" }]
+`
+	cfg, err := config.Parse([]byte(doc), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Warnings) == 0 {
+		t.Fatal("expected literal key warning, got none")
+	}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logConfigWarnings(logger, cfg)
+	out := buf.String()
+	if !strings.Contains(out, `"level":"WARN"`) {
+		t.Fatalf("log lacks WARN level: %s", out)
+	}
+	if !strings.Contains(out, "configuration warning") || !strings.Contains(out, "providers[0].api_keys[0].value") {
+		t.Fatalf("log lacks literal key warning finding: %s", out)
 	}
 }

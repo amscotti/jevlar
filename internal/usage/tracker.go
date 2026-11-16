@@ -14,9 +14,11 @@ import (
 
 // Usage is one response's reported accounting.
 type Usage struct {
-	// InputTokens is usage.input_tokens.
+	// InputTokens is usage.input_tokens (or usage.total_input_tokens when
+	// input_tokens is absent, as in Gemini Decisions responses).
 	InputTokens int64
-	// OutputTokens is usage.output_tokens.
+	// OutputTokens is usage.output_tokens (or usage.total_output_tokens
+	// when output_tokens is absent).
 	OutputTokens int64
 	// Cost is usage.cost when the provider reports it (OpenRouter does).
 	Cost float64
@@ -30,9 +32,11 @@ func (u Usage) Total() int64 { return u.InputTokens + u.OutputTokens }
 // wire is the minimal JSON shape the parser reads.
 type wire struct {
 	Usage *struct {
-		InputTokens  *int64   `json:"input_tokens"`
-		OutputTokens *int64   `json:"output_tokens"`
-		Cost         *float64 `json:"cost"`
+		InputTokens       *int64   `json:"input_tokens"`
+		OutputTokens      *int64   `json:"output_tokens"`
+		TotalInputTokens  *int64   `json:"total_input_tokens"`
+		TotalOutputTokens *int64   `json:"total_output_tokens"`
+		Cost              *float64 `json:"cost"`
 	} `json:"usage"`
 }
 
@@ -51,17 +55,27 @@ func Parse(body []byte) (Usage, bool) {
 		return Usage{}, false
 	}
 	u := Usage{}
+	hasField := false
 	if w.Usage.InputTokens != nil {
 		u.InputTokens = *w.Usage.InputTokens
+		hasField = true
+	} else if w.Usage.TotalInputTokens != nil {
+		u.InputTokens = *w.Usage.TotalInputTokens
+		hasField = true
 	}
 	if w.Usage.OutputTokens != nil {
 		u.OutputTokens = *w.Usage.OutputTokens
+		hasField = true
+	} else if w.Usage.TotalOutputTokens != nil {
+		u.OutputTokens = *w.Usage.TotalOutputTokens
+		hasField = true
 	}
 	if w.Usage.Cost != nil {
 		u.Cost = *w.Usage.Cost
 		u.HasCost = true
+		hasField = true
 	}
-	if w.Usage.InputTokens == nil && w.Usage.OutputTokens == nil && w.Usage.Cost == nil {
+	if !hasField {
 		return Usage{}, false
 	}
 	if u.InputTokens < 0 {

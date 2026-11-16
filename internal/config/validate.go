@@ -328,9 +328,9 @@ func (c *Config) validateAccounts() []ConfigError {
 }
 
 // validateProviders checks the provider rules: presence, unique names, base
-// URL shape and scheme policy, path shape, auth/key consistency, model
-// lists, timeout and concurrency bounds, the request-deadline ceiling, and
-// account references.
+// URL shape and scheme policy, path shape, auth/key consistency, wire
+// format, model lists, timeout and concurrency bounds, the request-deadline
+// ceiling, and account references.
 func (c *Config) validateProviders() []ConfigError {
 	var errs []ConfigError
 	if len(c.Providers) == 0 {
@@ -364,6 +364,7 @@ func (c *Config) validateProviders() []ConfigError {
 		errs = append(errs, validateBaseURL(field+".base_url", p.BaseURL)...)
 		errs = append(errs, validatePath(field+".path", p.Path)...)
 		errs = append(errs, validateProviderAuth(field, &c.Providers[i])...)
+		errs = append(errs, validateProviderWireFormat(field+".wire_format", p.WireFormat)...)
 		errs = append(errs, validateProviderModels(field+".models", p.Models)...)
 		if p.TimeoutMs < 1 || p.TimeoutMs > MaxProviderTimeoutMs {
 			errs = append(errs, ConfigError{
@@ -443,8 +444,8 @@ func validatePath(field, path string) []ConfigError {
 }
 
 // validateProviderAuth checks auth-mode/key consistency: the mode must be
-// known, bearer auth requires at least one key, and auth "none" must define
-// none. An empty mode means the default ("none").
+// known, bearer and x-goog-api-key auth require at least one key, and auth
+// "none" must define none. An empty mode means the default ("none").
 func validateProviderAuth(field string, p *Provider) []ConfigError {
 	var errs []ConfigError
 	auth := p.Auth
@@ -452,11 +453,11 @@ func validateProviderAuth(field string, p *Provider) []ConfigError {
 		auth = AuthNone
 	}
 	switch auth {
-	case AuthNone, AuthBearer:
+	case AuthNone, AuthBearer, AuthXGoogAPIKey:
 	default:
 		errs = append(errs, ConfigError{
 			Field: field + ".auth",
-			Msg:   fmt.Sprintf("must be %q or %q", AuthNone, AuthBearer),
+			Msg:   fmt.Sprintf("must be %q, %q or %q", AuthNone, AuthBearer, AuthXGoogAPIKey),
 		})
 	}
 	switch auth {
@@ -465,6 +466,13 @@ func validateProviderAuth(field string, p *Provider) []ConfigError {
 			errs = append(errs, ConfigError{
 				Field: field + ".api_keys",
 				Msg:   "bearer auth requires at least one key",
+			})
+		}
+	case AuthXGoogAPIKey:
+		if len(p.APIKeys) == 0 {
+			errs = append(errs, ConfigError{
+				Field: field + ".api_keys",
+				Msg:   "x-goog-api-key auth requires at least one key",
 			})
 		}
 	case AuthNone:
@@ -497,6 +505,20 @@ func validateProviderAuth(field string, p *Provider) []ConfigError {
 		}
 	}
 	return errs
+}
+
+// validateProviderWireFormat checks that wire_format is unset or a supported
+// protocol name.
+func validateProviderWireFormat(field, wireFormat string) []ConfigError {
+	switch wireFormat {
+	case "", WireSystemOne, WireGeminiDecisions:
+		return nil
+	default:
+		return []ConfigError{{
+			Field: field,
+			Msg:   fmt.Sprintf("must be %q or %q", WireSystemOne, WireGeminiDecisions),
+		}}
+	}
 }
 
 // validateProviderModels checks the provider's model surface: entries must
