@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Google AI Studio `gemini-decision-1` compatibility** ([ADR 0009](docs/adr/0009-gemini-decisions-wire-format.md)):
+  - New `providers[].auth = "x-goog-api-key"` and
+    `providers[].wire_format = "gemini-decisions"` configuration options
+    (default `"systemone"` preserves full ADR 0003 byte passthrough), surfaced
+    in `ConfigHash` and `GET /admin/status`.
+  - Stdlib-only `internal/wire` package isolating Gemini request translation
+    (`input`, `true_description`/`false_description` for `noul`, inline base64
+    image parts from multipart or JSON `assets`, compacting structured JSON
+    fields), response normalization (`model` and usage token fallback), and
+    Google RPC `API_KEY_INVALID`/`API_KEY_EXPIRED` (400/403) key-disable
+    classification.
+  - Inbound `X-Goog-Api-Key` stripping alongside `Authorization` before
+    upstream dispatch.
+  - `internal/usage` fallback from `total_input_tokens`/`total_output_tokens`
+    when `input_tokens`/`output_tokens` are absent.
+  - Updated `configs/example.toml`, `README.md`, `docs/operations.md`, ADR 0003,
+    ADR 0006, and `scripts/sdk-compat.sh` / `tests/sdk/compat.py` with live
+    `gemini-decision-1` SDK checks (`GEMINI_API_KEY`).
+- Complete `depguard` package dependency rules in `.golangci.yml` enforcing
+  module layering across all internal packages (including `internal/wire`
+  isolation).
+- Expanded unit, fuzz, and SDK compatibility test coverage across
+  `internal/wire`, `internal/config`, `internal/runtime`, `internal/admin`,
+  `internal/app`, `internal/usage`, `internal/proxy`, and `cmd/jevlar`.
+
 ## [0.1.0] - 2026-11-02
 
 First release. Scope is deliberately narrow: one wire format, four

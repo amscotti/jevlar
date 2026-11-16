@@ -60,6 +60,7 @@ number of configured providers.
 | Provider | Base URL + path | Auth | Notes |
 |---|---|---|---|
 | TypeSafe | `https://api.typesafe.ai` + `/v1/systemone` | bearer | `jev-latest`, `jev-1.13.0`, `jev-1.14`; limits are **per account** |
+| Google AI Studio | `https://generativelanguage.googleapis.com` + `/v1beta/decisions` | x-goog-api-key | `gemini-decision-1`; `wire_format = "gemini-decisions"`, 0 output tokens, multimodal (no `box`) |
 | Upstage Solar Decide | `https://api.upstage.ai` + `/v1/systemone` | bearer | `solar-decide`; max 26 choices per question (422 beyond) |
 | Ollama 0.35+ | `http://127.0.0.1:11434` + `/v1/systemone` | none | `nimble`, `tev1`; ≤64 questions, 64 KiB body |
 | OpenRouter | `https://openrouter.ai` + `/api/alpha/decisions` | bearer | `typesafe/jev-1.14`; reports `usage.cost` |
@@ -78,8 +79,28 @@ policy       = "priority"   # or "fastest"
 max_attempts = 3
 ```
 
-Jevlar splices that `model` value into the request and forwards every other
-byte unchanged.
+For Google AI Studio (`gemini-decision-1`), configure `auth = "x-goog-api-key"`
+and `wire_format = "gemini-decisions"`:
+
+```toml
+[[providers]]
+name        = "gemini"
+base_url    = "https://generativelanguage.googleapis.com"
+path        = "/v1beta/decisions"
+auth        = "x-goog-api-key"
+wire_format = "gemini-decisions"
+models      = ["gemini-decision-1"]
+api_keys    = [{ id = "primary", value = "${GEMINI_API_KEY}" }]
+
+[models."gemini-decision-1"]
+targets = [{ provider = "gemini", model = "gemini-decision-1" }]
+```
+
+For default `wire_format = "systemone"` providers, Jevlar splices that `model`
+value into the request and forwards every other byte unchanged. For
+`wire_format = "gemini-decisions"`, `internal/wire` translates requests and
+normalizes responses so TypeSafe SDK callers work unchanged (see
+`docs/adr/0009-gemini-decisions-wire-format.md`).
 
 > **Account limits do not multiply with keys.** If several keys share an
 > `[accounts.<name>]` group, they share the provider's per-account limit:
@@ -168,14 +189,21 @@ TypeSafe's image support is a gated beta: it needs the
 `TypeSafe-Danger-Zone-Images: true` request header, a `box` question (or an
 `assets` entry), and a vision-capable model — currently **`jev-preview`**.
 `TypeSafe-Danger-Zone-Long-Context: true` similarly unlocks long inputs.
+Google's **`gemini-decision-1`** (`wire_format = "gemini-decisions"`) also
+supports multimodal `noul`, `choice`, and `score` questions over attached
+images without a danger-zone header, while `box` questions remain specific to
+`jev-preview`.
 
-Jevlar forwards those headers, and accepts both ways the SDK sends images:
+Jevlar forwards danger-zone headers, and accepts both ways the SDK sends
+images:
 
 - **multipart/form-data** (what the SDK uses): a JSON part named `request`
-  plus one binary part per image. Jevlar reads the model from the JSON part
-  and forwards every byte, boundaries and image data included.
+  plus one binary part per image. For `systemone` providers, Jevlar reads the
+  model from the JSON part and forwards every byte, boundaries and image data
+  included; for `gemini-decisions`, `internal/wire` extracts the multipart
+  image parts into inline base64 entries inside `input`.
 - **inline JSON** `assets` with `data_base64`, which passes through as an
-  ordinary JSON body.
+  ordinary JSON body (or maps into `input` for `gemini-decisions`).
 
 The SDK compresses request bodies with zstd above 1 KiB, so a real image
 upload arrives compressed *and* multipart. Jevlar decodes a copy to find the
@@ -199,8 +227,9 @@ max_inflight   = 128       # keeps worst-case buffering ~1 GiB
 > `configs/example.toml` does.
 
 `mise run sdk-compat` runs the real SDK against a live gateway (needs
-`TYPESAFE_API_KEY`) and includes an image upload and a long-context request;
-see `tests/sdk/README.md`.
+`TYPESAFE_API_KEY` and/or `GEMINI_API_KEY`, loaded automatically from `.env` if
+present) and covers text decisions, multipart/zstd image uploads, and
+long-context requests; see `tests/sdk/README.md`.
 
 ## Admin plane
 

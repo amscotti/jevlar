@@ -42,8 +42,16 @@ decisions, not oversights:
    client asking for gzip receives an uncompressed body.
 2. **Hop-by-hop headers are stripped in both directions**, including any header
    named by `Connection`, per RFC 9110 §7.6.1.
-3. **The client's `Authorization` never reaches a provider.** It is replaced by
-   the selected provider key, or removed entirely for `auth = "none"`.
+3. **The client's `Authorization` and `X-Goog-Api-Key` never reach a provider.**
+   Both headers are stripped before upstream dispatch; `Authorization` (for
+   `auth = "bearer"`) or `X-Goog-Api-Key` (for `auth = "x-goog-api-key"`) is
+   injected from the selected provider key, or omitted entirely for
+   `auth = "none"`.
+
+See [ADR 0009](0009-gemini-decisions-wire-format.md) for the single scoped
+exception (`providers[].wire_format = "gemini-decisions"`), which translates a
+decoded copy (`inspectBody`) in `internal/wire` while keeping the default
+`wire_format = "systemone"` path 100% byte passthrough.
 
 A response body above `server.max_response_bytes` aborts the attempt (502 once
 no targets remain) rather than being streamed or truncated. Jevlar counts

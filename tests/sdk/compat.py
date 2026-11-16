@@ -6,15 +6,18 @@ questions, responses, errors and retries — so a green run means a Python
 application using the SDK works unchanged through the gateway.
 
 Environment:
-    JEVLAR_BASE_URL   base URL of the running gateway (default :28700)
-    JEVLAR_TOKEN      a client token with normal quota
-    JEVLAR_LIMITED    a client token with rpm = 1 (for the quota check)
+    JEVLAR_BASE_URL       base URL of the running gateway (default :28700)
+    JEVLAR_TOKEN          a client token with normal quota
+    JEVLAR_LIMITED        a client token with rpm = 1 (for the quota check)
+    JEVLAR_HAS_TYPESAFE   "1" to run TypeSafe live checks (default "1")
+    JEVLAR_HAS_GEMINI     "1" to run Gemini Decisions live checks (default "0")
 
 Exit code 0 means every check passed.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 
@@ -34,6 +37,8 @@ from typesafe_sdk import (
 BASE = os.environ.get("JEVLAR_BASE_URL", "http://127.0.0.1:28700")
 TOKEN = os.environ.get("JEVLAR_TOKEN", "sdk-token")
 LIMITED = os.environ.get("JEVLAR_LIMITED", "limited-token")
+HAS_TYPESAFE = os.environ.get("JEVLAR_HAS_TYPESAFE", "1") == "1"
+HAS_GEMINI = os.environ.get("JEVLAR_HAS_GEMINI", "0") == "1"
 
 STATE = "A customer has tried to connect Stripe for three days and is frustrated."
 QUESTIONS = {
@@ -92,7 +97,12 @@ def check(name: str, fn) -> None:
 
 
 def main() -> int:
+    if not HAS_TYPESAFE and not HAS_GEMINI:
+        print("FAIL  config: neither JEVLAR_HAS_TYPESAFE nor JEVLAR_HAS_GEMINI is enabled")
+        return 1
+
     client = TypeSafeClient(api_key=TOKEN, base_url=BASE)
+    default_model = "jev-latest" if HAS_TYPESAFE else "gemini-decision-1"
 
     def models() -> str:
         listed = client.models.list()
@@ -138,7 +148,7 @@ def main() -> int:
             api_key="definitely-not-a-key", base_url=BASE, retry=RetryPolicy(max_retries=0)
         )
         try:
-            bad.system_one(STATE, QUESTIONS, model="jev-latest")
+            bad.system_one(STATE, QUESTIONS, model=default_model)
         except TypeSafeAuthenticationError as error:
             if not error.request_id:
                 raise AssertionError("request_id missing from the 401") from error
@@ -165,7 +175,11 @@ def main() -> int:
         response = client._http_client.request(  # noqa: SLF001 - verifying wire headers
             "POST",
             BASE + "/v1/systemone",
-            json={"model": "jev-latest", "state": "x", "questions": {}},
+            json={
+                "model": default_model,
+                "state": "x",
+                "questions": {"ok": {"type": "noul", "instructions": "Is x non-empty?"}},
+            },
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         our_id = response.headers.get("x-typesafe-request-id")
@@ -190,8 +204,6 @@ def main() -> int:
         to multipart as soon as assets are attached, compresses the body
         above 1 KiB, and the model returns coordinates.
         """
-        import base64
-
         png = _synthetic_png()
         image = Image.from_base64(base64.b64encode(png))
         response = client.system_one(
@@ -229,16 +241,148 @@ def main() -> int:
             raise AssertionError(f"long context was not used: {response.usage}")
         return f"{response.usage.input_tokens} input tokens accepted"
 
-    check("models.list()", models)
-    check("system_one() noul+choice", system_one)
-    check("system_one() score", score)
-    check("provider error passthrough", provider_error_passthrough)
+    def gemini_models() -> str:
+        listed = client.models.list()
+        names = [m.name for m in listed.models]
+        if "gemini-decision-1" not in names:
+            raise AssertionError(f"gemini-decision-1 missing from {names}")
+        entry = next(m for m in listed.models if m.name == "gemini-decision-1")
+        if not entry.description:
+            raise AssertionError("gemini-decision-1 has no description")
+        if not entry.release_date:
+            raise AssertionError("gemini-decision-1 has no release_date")
+        return f"{len(names)} models; gemini-decision-1 description and release_date parse"
+
+    def gemini_system_one() -> str:
+        response = client.system_one(STATE, QUESTIONS, model="gemini-decision-1")
+        if response.model != "gemini-decision-1":
+            raise AssertionError(f"model={response.model!r}, want 'gemini-decision-1'")
+        if not 0.0 <= response.answers["urgent"].noul <= 1.0:
+            raise AssertionError(f"noul out of range: {response.answers['urgent'].noul}")
+        if response.answers["team"].choice not in {"billing", "technical"}:
+            raise AssertionError(f"unexpected choice: {response.answers['team'].choice!r}")
+        if response.usage.input_tokens is None or response.usage.input_tokens <= 0:
+            raise AssertionError(f"invalid input_tokens: {response.usage}")
+        if response.usage.output_tokens != 0:
+            raise AssertionError(
+                f"expected output_tokens == 0, got {response.usage.output_tokens}"
+            )
+        return (
+            f"model={response.model} "
+            f"tokens={response.usage.input_tokens}/{response.usage.output_tokens}"
+        )
+
+    def gemini_noul_criteria() -> str:
+        response = client.system_one(
+            STATE,
+            {
+                "urgent": Noul(
+                    instructions="Does this message express urgency?",
+                    criteria={
+                        "true": "The customer is blocked or needs immediate action.",
+                        "false": "Routine inquiry with no urgency.",
+                    },
+                )
+            },
+            model="gemini-decision-1",
+        )
+        noul = response.answers["urgent"].noul
+        if not 0.0 <= noul <= 1.0:
+            raise AssertionError(f"noul out of range: {noul}")
+        return f"noul={noul:.3f}"
+
+    def gemini_score() -> str:
+        response = client.system_one(
+            "The product arrived late and the box was damaged.",
+            {"severity": Score(instructions="Rate the severity.", criteria=["Mild", "Severe"])},
+            model="gemini-decision-1",
+        )
+        answer = response.answers["severity"]
+        if answer.type != "score":
+            raise AssertionError(f"answer type {answer.type}")
+        if not answer.legend:
+            raise AssertionError("score legend is empty")
+        low, high = min(answer.legend), max(answer.legend)
+        if not low <= answer.score <= high:
+            raise AssertionError(
+                f"score {answer.score} outside legend bounds [{low}, {high}]"
+            )
+        return f"score={answer.score:.3f} confidence={answer.confidence:.3f}"
+
+    def gemini_structured_state() -> str:
+        response = client.system_one(
+            {
+                "ticket_id": "T-4821",
+                "plan": "enterprise",
+                "days_blocked": 3,
+                "summary": "Cannot connect Stripe webhook after key rotation.",
+            },
+            {"escalate": Noul(instructions="Should support escalate this ticket?")},
+            model="gemini-decision-1",
+        )
+        noul = response.answers["escalate"].noul
+        if not 0.0 <= noul <= 1.0:
+            raise AssertionError(f"noul out of range: {noul}")
+        return f"structured state accepted; noul={noul:.3f}"
+
+    def gemini_image_noul() -> str:
+        png = _synthetic_png()
+        image = Image.from_base64(base64.b64encode(png))
+        response = client.system_one(
+            "photo",
+            {"red": Noul(instructions="Does the photo contain a red rectangle?")},
+            model="gemini-decision-1",
+            assets={"photo": image},
+        )
+        answer = response.answers["red"]
+        if answer.type != "noul":
+            raise AssertionError(f"answer type {answer.type}")
+        if not 0.0 <= answer.noul <= 1.0:
+            raise AssertionError(f"noul out of range: {answer.noul}")
+        if response.usage.input_tokens is None or response.usage.input_tokens <= 500:
+            raise AssertionError(
+                f"image did not reach Gemini (input_tokens={response.usage.input_tokens})"
+            )
+        return (
+            f"noul={answer.noul:.3f} "
+            f"tokens={response.usage.input_tokens}/{response.usage.output_tokens}"
+        )
+
+    def gemini_provider_error_passthrough() -> str:
+        try:
+            client.system_one(
+                STATE,
+                QUESTIONS,
+                model="gemini-decision-1",
+                extra_body={"__unknown__": 1},
+            )
+        except TypeSafeBadRequestError as error:
+            if not error.request_id:
+                raise AssertionError("request_id missing from provider 400") from error
+            return f"provider 400 surfaced as {type(error).__name__} (request_id={error.request_id})"
+        raise AssertionError("provider accepted the extra field")
+
+    if HAS_TYPESAFE:
+        check("models.list()", models)
+        check("system_one() noul+choice", system_one)
+        check("system_one() score", score)
+        check("provider error passthrough", provider_error_passthrough)
+        check("client rpm quota", client_quota)
+        check("zstd request compression", zstd)
+        check("image upload (multipart+zstd, box)", image_box)
+        check("long-context danger flag", long_context)
+
     check("401 carries a request id", auth_error_request_id)
-    check("client rpm quota", client_quota)
     check("request-id headers", request_ids)
-    check("zstd request compression", zstd)
-    check("image upload (multipart+zstd, box)", image_box)
-    check("long-context danger flag", long_context)
+
+    if HAS_GEMINI:
+        check("gemini models.list()", gemini_models)
+        check("gemini system_one() noul+choice", gemini_system_one)
+        check("gemini system_one() NoulCriteria", gemini_noul_criteria)
+        check("gemini system_one() score", gemini_score)
+        check("gemini system_one() structured JSON state", gemini_structured_state)
+        check("gemini image upload (multipart+zstd, noul)", gemini_image_noul)
+        check("gemini provider error passthrough", gemini_provider_error_passthrough)
 
     failed = [name for name, passed, _ in results if not passed]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

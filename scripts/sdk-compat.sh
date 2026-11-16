@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # Run the official TypeSafe Python SDK against Jevlar, end to end.
-# Requires TYPESAFE_API_KEY and network access.
+# Requires TYPESAFE_API_KEY and/or GEMINI_API_KEY (or .env) and network access.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-: "${TYPESAFE_API_KEY:?set TYPESAFE_API_KEY (see .env) }"
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+if [[ -z "${TYPESAFE_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" ]]; then
+  echo "error: set TYPESAFE_API_KEY and/or GEMINI_API_KEY (see .env)" >&2
+  exit 1
+fi
+
 PORT="${SDK_PORT:-28700}"
 ADMIN="${SDK_ADMIN:-28701}"
 TMP="$(mktemp -d)"
@@ -39,6 +50,14 @@ keys = [
   { id = "sdk", hash = "$(./bin/jevlar keyhash "$TOKEN")" },
   { id = "limited", hash = "$(./bin/jevlar keyhash "$LIMITED")", rpm = 1 },
 ]
+CFG
+
+JEVLAR_HAS_TYPESAFE=0
+JEVLAR_HAS_GEMINI=0
+
+if [[ -n "${TYPESAFE_API_KEY:-}" ]]; then
+  JEVLAR_HAS_TYPESAFE=1
+  cat >> "$TMP/jevlar.toml" <<'CFG'
 
 [[providers]]
 name = "typesafe"
@@ -48,7 +67,7 @@ auth = "bearer"
 models = ["jev-latest", "jev-preview", "jev-1.14"]
 timeout_ms = 120000
 max_concurrency = 8
-api_keys = [{ id = "primary", value = "\${TYPESAFE_API_KEY}" }]
+api_keys = [{ id = "primary", value = "${TYPESAFE_API_KEY}" }]
 
 [models."jev-latest"]
 targets = [{ provider = "typesafe", model = "jev-latest" }]
@@ -63,6 +82,31 @@ max_attempts = 1
 description = "Preview Jev model; required for image and box questions."
 release_date = "2026-10-14"
 CFG
+fi
+
+if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+  JEVLAR_HAS_GEMINI=1
+  cat >> "$TMP/jevlar.toml" <<'CFG'
+
+[[providers]]
+name = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+path = "/v1beta/decisions"
+auth = "x-goog-api-key"
+wire_format = "gemini-decisions"
+models = ["gemini-decision-1"]
+timeout_ms = 120000
+max_concurrency = 8
+api_keys = [{ id = "primary", value = "${GEMINI_API_KEY}" }]
+
+[models."gemini-decision-1"]
+targets = [{ provider = "gemini", model = "gemini-decision-1" }]
+max_attempts = 1
+description = "Google Gemini Decisions System-1 decision model."
+release_date = "2026-10-01"
+CFG
+fi
+
 chmod 600 "$TMP/jevlar.toml"
 
 ./bin/jevlar --config "$TMP/jevlar.toml" > "$TMP/jevlar.log" 2>&1 &
@@ -82,4 +126,6 @@ fi
 JEVLAR_BASE_URL="http://127.0.0.1:${PORT}" \
 JEVLAR_TOKEN="$TOKEN" \
 JEVLAR_LIMITED="$LIMITED" \
+JEVLAR_HAS_TYPESAFE="$JEVLAR_HAS_TYPESAFE" \
+JEVLAR_HAS_GEMINI="$JEVLAR_HAS_GEMINI" \
   "$VENV/bin/python" tests/sdk/compat.py

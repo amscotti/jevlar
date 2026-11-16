@@ -62,16 +62,39 @@ logs a warning saying so. The durable rollup writer and the
 `usage.enabled`, `usage.dir`, `usage.retention_days` or `usage.max_file_mb`
 also needs a restart (a reload warns).
 
+## Provider wire formats and auth modes
+
+Providers default to `wire_format = "systemone"`, which keeps ADR 0003 byte
+passthrough (only splicing `model` when a target rewrites the model id).
+
+Google AI Studio (`gemini-decision-1`) uses two provider settings:
+
+- `auth = "x-goog-api-key"` — strips any inbound `Authorization` and
+  `X-Goog-Api-Key` headers and sends the selected provider key in
+  `X-Goog-Api-Key`.
+- `wire_format = "gemini-decisions"` — translates System One requests (`state`,
+  `assets`, `noul` `true`/`false` criteria, structured JSON fields) into
+  Gemini's `input` / `true_description` / `false_description` envelope inside
+  `internal/wire`, and normalizes responses (`model`, `total_input_tokens` →
+  `input_tokens`, `total_output_tokens` → `output_tokens`).
+
+Because the decoded request copy (`inspectBody`) stays immutable across
+attempts, a single `[models.<alias>]` can fail over transparently between
+`"systemone"` and `"gemini-decisions"` targets.
+
 ## Image and long-context requests
 
-Image support is a gated provider beta. Three things must line up:
+Image behavior depends on the routed model and provider:
 
-1. The client sends `TypeSafe-Danger-Zone-Images: true` (Jevlar forwards it).
-2. The request uses a `box` question or an `assets` entry.
-3. The routed model supports vision — on TypeSafe that is `jev-preview`,
-   not `jev-latest`.
-
-`TypeSafe-Danger-Zone-Long-Context: true` works the same way for long inputs.
+- **TypeSafe (`jev-preview`)** gates image support behind
+  `TypeSafe-Danger-Zone-Images: true` (Jevlar forwards it) and supports
+  `box` coordinate questions as well as `assets` (unlike `jev-latest`).
+  `TypeSafe-Danger-Zone-Long-Context: true` works the same way for long inputs.
+- **Google AI Studio (`gemini-decision-1`)** supports multimodal `noul`,
+  `choice`, and `score` questions over attached images (`assets`) without a
+  danger-zone header, and reports 0 output tokens. **`box` questions are
+  unsupported** on `gemini-decision-1`: if routed there, Gemini returns HTTP
+  400 and Jevlar passes it through unchanged.
 
 Size the body cap for the traffic you expect:
 
@@ -98,12 +121,16 @@ by accident.
 2. Once traffic has moved, remove the old key and reload.
 
 A key that returns 401 is disabled automatically and *stays* disabled
-across reloads. Re-enabling requires removing and re-adding it (or a
-process restart) after fixing the credential — a deliberate choice: the
-gateway will not silently retry a revoked key.
+across reloads. For `wire_format = "gemini-decisions"` providers, Google's
+invalid/expired key response — HTTP 400 (or 403) containing RPC error detail
+reason `API_KEY_INVALID` or `API_KEY_EXPIRED` — triggers the same automatic
+key disable and failover rather than passing a 400 back to the client.
+Re-enabling requires removing and re-adding the key entry (or a process
+restart) after fixing the credential — a deliberate choice: the gateway will
+not silently retry a revoked key.
 
 **403 is not 401.** Providers also use 403 for quota and plan limits, so a
-403 cools the key for 60 seconds and increments
+non-invalid-key 403 cools the key for 60 seconds and increments
 `jevlar_key_suspect_total` instead of disabling it.
 
 ## Account limits are per account, not per key
@@ -142,11 +169,12 @@ cause is concurrency rather than rate limits.
    `jevlar_requests_total` for that provider.
 4. To shed load deliberately, lower `server.max_inflight` and reload.
 
-## 401 storms
+## 401 storms (and Gemini invalid-key 400s)
 
-A 401 disables one key and fails over; it does not take the gateway down.
-If *every* key is disabled, `/readyz` goes 503 and clients see 503
-`capacity_exhausted`.
+A 401 (or a Google RPC `400`/`403` `API_KEY_INVALID`/`API_KEY_EXPIRED` error on
+a `gemini-decisions` provider) disables one key and fails over; it does not
+take the gateway down. If *every* key is disabled, `/readyz` goes 503 and
+clients see 503 `capacity_exhausted`.
 
 - Confirm the credential is valid outside Jevlar first.
 - Fix the credential, then remove and re-add the key entry (reload alone
